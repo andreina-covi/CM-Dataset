@@ -36,11 +36,6 @@ def preprocess_objectId(text):
     output.extend([float(num) for num in arr_strs[1:]])
     return tuple(output)
 
-# def print_movement(event):
-#     agent_pos = event.metadata['agent']['position']
-#     agent_rot = event.metadata['agent']['rotation']
-#     print("Position: ", agent_pos, "Rotation: ", agent_rot)
-
 def get_object_map(arr_objects, position, rotation):
     object_map = set()
     map = set()
@@ -70,19 +65,29 @@ def get_object_map(arr_objects, position, rotation):
         ))
     return map, object_map
 
-def set_egocentric_data(event, map, action):
-    # print(event.metadata['agent'], event.metadata['cameraPosition'], event.metadata['lastAction'])
+def calculate_distance(tuple1, tuple2):
+    return np.linalg.norm(np.array(tuple1) - np.array(tuple2))
+
+def collect_data(event, map, action):
     agent_pos = event.metadata['agent']['position']
+    agent_new_pos = [np.round(agent_pos['x'], 2), np.round(agent_pos['z'], 2)]
     agent_rot = event.metadata['agent']['rotation']['y']  # yaw
-    # if not map['positions']:
     map['action'].append(action['action'])
-    map['positions'].append([np.round(agent_pos['x'], 4), np.round(agent_pos['z'], 4)])
+    # if map['positions']:
+    #     last_pos = map['positions'][-1]
+    #     res = calculate_distance(last_pos, agent_new_pos)
+    #     print('Distance: ', res)
+    map['positions'].append(agent_new_pos)
     map['rotations'].append(agent_rot)
 
     cond_objs, objects_map = get_object_map(event.metadata['objects'], agent_pos, agent_rot)
-    print(cond_objs, objects_map)
-    map['cond_objects'].update(cond_objs)
-    map['objects'].update(objects_map)
+    # for each action collect objects positions
+    map['cond_objects'].append(cond_objs)
+    # add objects with their positions info if the set does not contain already
+    if map['objects']:
+        map['objects'].update(objects_map)
+    else:
+        map['objects'] = objects_map
 
 def navigate(controller, screen, map):
     # Game loop
@@ -100,11 +105,7 @@ def navigate(controller, screen, map):
                 action = get_action(event.key)
                 if action:
                     ai2_event = controller.step(action=action)
-                    # print(ai2_event.metadata['agent'].keys())
-                    # running = False
-                    # break
-                    set_egocentric_data(ai2_event, map, action)
-                    # print_movement(ai2_event)
+                    collect_data(ai2_event, map, action)
 
         # Render frame
         frame = controller.last_event.frame
@@ -134,10 +135,25 @@ def draw_egocentric_map(obj_list):
     plt.grid(True)
     plt.show()
     
+def draw_allocentric_map(obj_list):
+    plt.figure(figsize=(6,6))
+    plt.scatter(0, 0, c='red', label='Agent')  # Agent at center
+
+    for t in obj_list:
+        plt.scatter(t[1], t[3], label=t[0])
+        plt.text(t[1], t[3], t[0], fontsize=8)
+
+    plt.xlim(-2, 2)
+    plt.ylim(-2, 2)
+    # plt.gca().invert_zaxis()  # Optional for aligning with camera view
+    plt.legend()
+    plt.title('Egocentric Object Map')
+    plt.grid(True)
+    plt.show()
 
 WIDTH = 500
 HEIGHT = 500
-GRID_SIZE = 0.1
+GRID_SIZE = 0.25
 
 if __name__ == '__main__':
     # Initialize AI2-THOR
@@ -150,6 +166,7 @@ if __name__ == '__main__':
     map = {'action': [], 'positions': [], 'rotations': [], 'objects': {}, \
         'cond_objects': []}
     navigate(controller, screen, map)
+    draw_allocentric_map(map['objects'])
     print(map)
     # for ego_pos in ego_position_list:
     #     draw_egocentric_map(ego_pos)
