@@ -1,9 +1,16 @@
-import pygame
-import cv2
+import os
 import numpy as np
 import matplotlib.pyplot as plt
+import pandas as pd
+import cv2
+import pygame
+
 from ai2thor.controller import Controller
 
+ROOT_PATH = 'Dataset'
+NAVIGATION_FILE_PATH = os.path.join(ROOT_PATH, 'navigation.csv')
+OBJECTS_FILE_PATH = os.path.join(ROOT_PATH, 'objects.csv')
+IMAGE_PATH = os.path.join(ROOT_PATH, 'Images')
 # Define key-to-action mapping
 def get_action(key):
     dict_action = None
@@ -29,69 +36,61 @@ def stop_running(key):
         stop = True
     return stop
 
-def preprocess_objectId(text):
-    output = []
-    arr_strs = text.split("|")
-    output.append(arr_strs[0])
-    output.extend([float(num) for num in arr_strs[1:]])
-    return tuple(output)
+def get_object_data(arr_objects):
+    objects = set()
+    cond_objs = []
 
-def get_object_map(arr_objects, position, rotation):
-    object_map = set()
-    map = set()
-
-    for obj in arr_objects:
-        if not obj['visible']:
+    for obj_dict in arr_objects:
+        if not obj_dict['visible']:
             continue
-
-        obj_pos = obj['position']
-        dx = obj_pos['x'] - position['x']
-        dz = obj_pos['z'] - position['z']
-
-        # Convert to agent-centric coordinates
-        theta = -np.deg2rad(rotation)
-        x_rel = dx * np.cos(theta) - dz * np.sin(theta)
-        z_rel = dx * np.sin(theta) + dz * np.cos(theta)
-        tuple_object = preprocess_objectId(obj['objectId'])
-        object_map.add(tuple_object)
-
-        map.add((
-            #'objectId': 
-            tuple_object[0],
-            #'x': 
-            np.round(x_rel, 4),
-            #'z': 
-            np.round(z_rel, 4)
+        cond_objs.append([
+            # class label
+            obj_dict['objectType'],
+            # name
+            obj_dict['name'],
+            # global position 
+            tuple(round_number(obj_dict['position'], 2)),
+            # local rotation
+            tuple(round_number(obj_dict['rotation'], 2)),
+            # euclidean distance from the center-point to the agent
+            np.round(obj_dict['distance'], 4)
+        ])
+        objects.add((
+            obj_dict['objectType'],
+            obj_dict['name'],
+            tuple(round_number(obj_dict['position'], 2)),
         ))
-    return map, object_map
+    return cond_objs, objects
 
-def calculate_distance(tuple1, tuple2):
-    return np.linalg.norm(np.array(tuple1) - np.array(tuple2))
-
-def collect_data(event, map, action):
-    agent_pos = event.metadata['agent']['position']
-    agent_new_pos = [np.round(agent_pos['x'], 2), np.round(agent_pos['z'], 2)]
-    agent_rot = event.metadata['agent']['rotation']['y']  # yaw
-    map['action'].append(action['action'])
-    # if map['positions']:
-    #     last_pos = map['positions'][-1]
-    #     res = calculate_distance(last_pos, agent_new_pos)
-    #     print('Distance: ', res)
-    map['positions'].append(agent_new_pos)
-    map['rotations'].append(agent_rot)
-
-    cond_objs, objects_map = get_object_map(event.metadata['objects'], agent_pos, agent_rot)
-    # for each action collect objects positions
-    map['cond_objects'].append(cond_objs)
-    # add objects with their positions info if the set does not contain already
-    if map['objects']:
-        map['objects'].update(objects_map)
+def round_number(arr_numbers, n_round):
+    rounded_arr = []
+    if type(arr_numbers) is dict:
+        rounded_arr = [arr_numbers['x'], arr_numbers['y'], arr_numbers['z']]
     else:
-        map['objects'] = objects_map
+        rounded_arr = arr_numbers
+    return tuple([np.round(number, n_round) for number in rounded_arr])
 
-def navigate(controller, screen, map):
+def collect_data(event, dict_agent, dict_objects, action, index, image_path):
+    position = round_number(event.metadata['agent']['position'], 2)
+    rotation = round_number(event.metadata['agent']['rotation'], 2)
+    key = (action, position, rotation)
+    if key not in dict_agent:
+        dict_agent[key] = {'objects': [], 'image': ''}
+        cond_objs, objects = get_object_data(event.metadata['objects'])
+        dict_agent[key]['objects'] = cond_objs
+        if dict_objects['objects']:
+            dict_objects['objects'].update(objects)
+        else:
+            dict_objects['objects'] = objects
+        # save image
+        image_name = os.path.join(image_path, 'img_' + str(index) + '.png')
+        dict_agent[key]['image'] = image_name
+        cv2.imwrite(image_name, event.cv2img)
+
+def navigate(controller, screen, dict_agent, dict_objects, image_path=IMAGE_PATH):
     # Game loop
     running = True
+    index_img = 0
 
     while running:
         for event in pygame.event.get():
@@ -105,7 +104,8 @@ def navigate(controller, screen, map):
                 action = get_action(event.key)
                 if action:
                     ai2_event = controller.step(action=action)
-                    collect_data(ai2_event, map, action)
+                    collect_data(ai2_event, dict_agent, dict_objects, action['action'], index_img, image_path)
+                    index_img += 1
 
         # Render frame
         frame = controller.last_event.frame
@@ -118,55 +118,91 @@ def navigate(controller, screen, map):
 
     controller.stop()
     pygame.quit()
-
-def draw_egocentric_map(obj_list):
-    plt.figure(figsize=(6,6))
-    plt.scatter(0, 0, c='red', label='Agent')  # Agent at center
-
-    for obj in obj_list:
-        plt.scatter(obj['x'], obj['z'], label=obj['objectId'].split('|')[0])
-        plt.text(obj['x'], obj['z'], obj['objectId'].split('|')[0][:6], fontsize=8)
-
-    plt.xlim(-2, 2)
-    plt.ylim(-2, 2)
-    # plt.gca().invert_zaxis()  # Optional for aligning with camera view
-    plt.legend()
-    plt.title('Egocentric Object Map')
-    plt.grid(True)
-    plt.show()
     
 def draw_allocentric_map(obj_list):
-    plt.figure(figsize=(6,6))
-    plt.scatter(0, 0, c='red', label='Agent')  # Agent at center
-
+    fig = plt.figure()
+    ax = fig.add_subplot(projection='3d')
+    # plt.figure(figsize=(10, 10))
+    # plt.scatter(0, 0, c='red', label='Agent')  # Agent at center
+    
     for t in obj_list:
-        plt.scatter(t[1], t[3], label=t[0])
-        plt.text(t[1], t[3], t[0], fontsize=8)
+        ax.scatter(t[2][0], t[2][1], t[2][2], label=t[0])
+        ax.text(t[2][0], t[2][1], t[2][2], t[0], fontsize=8)
 
-    plt.xlim(-2, 2)
-    plt.ylim(-2, 2)
+    # plt.xlim(-2, 2)
+    # plt.ylim(-2, 2)
     # plt.gca().invert_zaxis()  # Optional for aligning with camera view
-    plt.legend()
+    # plt.legend()
     plt.title('Egocentric Object Map')
-    plt.grid(True)
+    # plt.grid(True)
     plt.show()
+
+def save_data_by_axis(dict_data, base_name, array):
+    axis_names = ['-x', '-y', '-z']
+    for (axis, item) in zip(axis_names, array):
+        dict_data[base_name + axis].append(item)
+
+def save_data_navigation(dict_navigation, key, objects_data, path_image):
+    for object_data in objects_data:
+        dict_navigation['ag-action'].append(key[0])
+        save_data_by_axis(dict_navigation, 'ag-pos', key[1])
+        save_data_by_axis(dict_navigation, 'ag-rot', key[2])
+        dict_navigation['obj-type'].append(object_data[0])
+        dict_navigation['obj-name'].append(object_data[1])
+        save_data_by_axis(dict_navigation, 'obj-pos', object_data[2])
+        save_data_by_axis(dict_navigation, 'obj-rot', object_data[3])
+        dict_navigation['obj-distance'].append(object_data[4])
+        dict_navigation['path'].append(path_image)    
+
+def get_dict_navigation(dict_agent):
+    dict_navigation = {'ag-action': [], 'ag-pos-x': [], 'ag-pos-y': [], 'ag-pos-z': [], 
+        'ag-rot-x': [], 'ag-rot-y': [], 'ag-rot-z': [], 'obj-type': [], 
+        'obj-name': [], 'obj-pos-x': [], 'obj-pos-y': [], 'obj-pos-z': [], 
+        'obj-rot-x': [], 'obj-rot-y': [], 'obj-rot-z': [], 'obj-distance': [], 'path': []}
+    for key in dict_agent:
+        object_data = dict_agent[key]['objects']
+        image_path = dict_agent[key]['image']
+        save_data_navigation(dict_navigation, key, object_data, image_path)
+    return dict_navigation
+
+def get_dict_objects(set_objects):
+    dict_objects = {'obj-type': [], 'obj-name': [], 'obj-pos-x': [], \
+        'obj-pos-y': [], 'obj-pos-z': []}
+    for t in set_objects:
+        dict_objects['obj-type'].append(t[0])
+        dict_objects['obj-name'].append(t[1])
+        save_data_by_axis(dict_objects, 'obj-pos', t[2])
+    return dict_objects
 
 WIDTH = 500
 HEIGHT = 500
 GRID_SIZE = 0.25
+VISIBILITY_DISTANCE = 1.5
+ROTATE_STEP_DEGREES = 45
 
 if __name__ == '__main__':
     # Initialize AI2-THOR
-    controller = Controller(scene="FloorPlan1", gridSize=GRID_SIZE, width=WIDTH, height=HEIGHT)
+    controller = Controller(
+        scene="FloorPlan1",
+        visibility_distance=VISIBILITY_DISTANCE,
+        rotateStepDegrees=ROTATE_STEP_DEGREES, 
+        snapToGrid=False,
+        gridSize=GRID_SIZE, 
+        width=WIDTH, 
+        height=HEIGHT)
 
+    os.makedirs(ROOT_PATH, exist_ok=True)
+    os.makedirs(IMAGE_PATH, exist_ok=True)
     # Pygame setup
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
     pygame.display.set_caption("AI2-THOR Explorer")
-    map = {'action': [], 'positions': [], 'rotations': [], 'objects': {}, \
-        'cond_objects': []}
-    navigate(controller, screen, map)
-    draw_allocentric_map(map['objects'])
-    print(map)
-    # for ego_pos in ego_position_list:
-    #     draw_egocentric_map(ego_pos)
+    dict_agent = {}
+    data_objects = {'objects': set()}
+    navigate(controller, screen, dict_agent, data_objects, IMAGE_PATH)
+    dict_navigation = get_dict_navigation(dict_agent)
+    df_navigation = pd.DataFrame(dict_navigation)
+    dict_objects = get_dict_objects(data_objects['objects'])
+    df_objects = pd.DataFrame(dict_objects)
+    df_navigation.to_csv(NAVIGATION_FILE_PATH)
+    df_objects.to_csv(OBJECTS_FILE_PATH)
