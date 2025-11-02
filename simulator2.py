@@ -87,6 +87,27 @@ def collect_data(event, dict_agent, dict_objects, action, index, image_path):
         dict_agent[key]['image'] = image_name
         cv2.imwrite(image_name, event.cv2img)
 
+def get_detections(controller):
+    if controller.last_event.instance_segmentation_frame is None:
+        # controller.step("Pass", renderImageSynthesis=True)
+        # controller.renderInstanceSegmentation = True
+        print("instance segmentation is none")
+    
+    # print("segmentation_Frame: ", controller.last_event.instance_segmentation_frame)
+    # print(len(controller.last_event.instance_segmentation_frame))
+    # print(controller.last_event.instance_segmentation_frame[0])
+    detections = controller.last_event.instance_detections2D
+    print(len(detections))
+    masks = detections.instance_masks
+    # print(len(masks))
+    # print(type(det2d))
+    for mask in masks:
+        d = detections.__getitem__(mask)
+        print(mask, d)
+        # print(f"detection of object: {i}: {mask}")
+        # print(f"BBox: {detections.mask_bounding_box(mask)}")
+    # print("masks:", controller.last_event.instance_masks)
+
 def navigate(controller, screen, dict_agent, dict_objects, image_path=IMAGE_PATH):
     # Game loop
     running = True
@@ -104,6 +125,7 @@ def navigate(controller, screen, dict_agent, dict_objects, image_path=IMAGE_PATH
                 action = get_action(event.key)
                 if action:
                     ai2_event = controller.step(action=action)
+                    get_detections(controller)
                     collect_data(ai2_event, dict_agent, dict_objects, action['action'], index_img, image_path)
                     index_img += 1
 
@@ -189,10 +211,11 @@ if __name__ == '__main__':
         snapToGrid=False,
         gridSize=GRID_SIZE, 
         width=WIDTH, 
-        height=HEIGHT)
+        height=HEIGHT,
+        renderInstanceSegmentation=True)
 
-    os.makedirs(ROOT_PATH, exist_ok=True)
-    os.makedirs(IMAGE_PATH, exist_ok=True)
+    # os.makedirs(ROOT_PATH, exist_ok=True)
+    # os.makedirs(IMAGE_PATH, exist_ok=True)
     # Pygame setup
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -201,8 +224,10 @@ if __name__ == '__main__':
     data_objects = {'objects': set()}
     navigate(controller, screen, dict_agent, data_objects, IMAGE_PATH)
     dict_navigation = get_dict_navigation(dict_agent)
-    df_navigation = pd.DataFrame(dict_navigation)
+    # df_navigation = pd.DataFrame(dict_navigation)
     dict_objects = get_dict_objects(data_objects['objects'])
-    df_objects = pd.DataFrame(dict_objects)
-    df_navigation.to_csv(NAVIGATION_FILE_PATH)
-    df_objects.to_csv(OBJECTS_FILE_PATH)
+    # df_objects = pd.DataFrame(dict_objects)
+    # df_navigation.to_csv(NAVIGATION_FILE_PATH)
+    # df_objects.to_csv(OBJECTS_FILE_PATH)
+    # print("dict_objects: ", dict_objects)
+    # print("dict_navigation: ", dict_navigation)
